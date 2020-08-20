@@ -1,9 +1,8 @@
-
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::rc::Rc;
-use std::cell::RefCell;
-use std::collections::HashMap;
 
 pub fn read_input(filename: &str) -> Vec<String> {
     let file = File::open(filename).unwrap();
@@ -40,7 +39,6 @@ pub fn parse_i64(s: &String) -> i64 {
     }
 }
 
-
 fn read_galaxy() {
     let lines = read_input("galaxy.txt");
     for l in &lines {
@@ -51,16 +49,14 @@ fn read_galaxy() {
     }
 }
 
-
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum ExprType {
     Atom,
-    Ap
+    Ap,
 }
 
 type ExprPtr = Rc<Expr>;
 // type ExprLink = Option<ExprPtr>;
-
 
 #[derive(Debug, Clone, PartialEq)]
 struct Expr {
@@ -87,7 +83,6 @@ impl TokenStream {
     }
 }
 
-
 fn parse_from_string(s: &String) -> ExprPtr {
     let tokens = split_string(s, " ");
     parse_from_tokens(&tokens)
@@ -96,7 +91,7 @@ fn parse_from_string(s: &String) -> ExprPtr {
 fn parse_from_tokens(tokens: &Vec<String>) -> ExprPtr {
     let mut stream = TokenStream {
         vec: tokens.clone(),
-        index: 0
+        index: 0,
     };
     parse_expr(&mut stream)
 }
@@ -113,6 +108,14 @@ fn parse_expr(stream: &mut TokenStream) -> ExprPtr {
 }
 
 type FunctionMap = HashMap<String, ExprPtr>;
+
+fn create_t() -> ExprPtr {
+    atom("t")
+}
+
+fn create_f() -> ExprPtr {
+    atom("f")
+}
 
 fn atom_string(name: String) -> ExprPtr {
     Rc::new(Expr {
@@ -179,6 +182,24 @@ fn try_eval(expr: ExprPtr) -> ExprPtr {
             if fun2.expr_type == ExprType::Atom {
                 if fun2.name == "add" {
                     return atom_int(as_number(eval(x)) + as_number(eval(y)));
+                } else if fun2.name == "mul" {
+                    return atom_int(as_number(eval(x)) * as_number(eval(y)));
+                } else if fun2.name == "div" {
+                    return atom_int(as_number(eval(y)) / as_number(eval(x)));
+                } else if fun2.name == "eq" {
+                    return if as_number(eval(x)) == as_number(eval(y)) {
+                        create_t()
+                    } else {
+                        create_f()
+                    };
+                } else if fun2.name == "lt" {
+                    return if as_number(eval(y)) < as_number(eval(x)) {
+                        create_t()
+                    } else {
+                        create_f()
+                    };
+                } else {
+                    panic!("Unimplemented operator: {:?}", fun2.name);
                 }
             }
         } else {
@@ -194,7 +215,6 @@ fn as_number(expr: ExprPtr) -> i64 {
     }
     panic!("{:?} is not a number", *expr);
 }
-
 
 // Expr try_eval(Expr expr)
 //     if (expr.Evaluated != null)
@@ -233,12 +253,21 @@ fn as_number(expr: ExprPtr) -> i64 {
 //                     if (fun3.Name == "cons") return Ap(Ap(x, z), y)
 //     return expr
 
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn assert_parse_eval(input: &str, expected: &str) {
+        let expr = parse_from_string(&input.to_string());
+        let value = eval(expr);
+        assert_eq!(value.expr_type, ExprType::Atom);
+        assert_eq!(value.name, expected, "input = {}", input);
+    }
+
     #[test]
-    fn test_neg() {
+    fn test_eval1() {
         let expr = ap(atom("neg"), atom("14"));
         let value = eval(expr);
         println!("{:?}", value);
@@ -248,14 +277,45 @@ mod tests {
 
     #[test]
     fn test_add() {
-        let input = "ap ap add 1 2".to_string();
-        let expr = parse_from_string(&input);
-        let value = eval(expr);
-        assert_eq!(value.expr_type, ExprType::Atom);
-        assert_eq!(value.name, "3");
+        assert_parse_eval("ap ap add 1 2", "3");
     }
-}
 
+    #[test]
+    fn test_mul() {
+        assert_parse_eval("ap ap mul 4 2", "8");
+        assert_parse_eval("ap ap mul 3 4", "12");
+        assert_parse_eval("ap ap mul 3 -2", "-6");
+    }
+
+    #[test]
+    fn test_div() {
+        assert_parse_eval("ap ap div 4 3", "1");
+        assert_parse_eval("ap ap div 4 4", "1");
+        assert_parse_eval("ap ap div 4 5", "0");
+        assert_parse_eval("ap ap div 5 2", "2");
+        assert_parse_eval("ap ap div 6 -2", "-3");
+        assert_parse_eval("ap ap div 5 -3", "-1");
+        assert_parse_eval("ap ap div -5 3", "-1");
+        assert_parse_eval("ap ap div -5 -3", "1");
+        assert_parse_eval("ap ap div 4 2", "2");
+    }
+
+    #[test]
+    fn test_eq() {
+        assert_parse_eval("ap ap eq 0 0", "t");
+        assert_parse_eval("ap ap eq 0 1", "f");
+        assert_parse_eval("ap ap eq 0 2", "f");
+    }
+
+
+    #[test]
+    fn test_lt() {
+        assert_parse_eval("ap ap lt 1 0", "f");
+        assert_parse_eval("ap ap lt 1 1", "f");
+        assert_parse_eval("ap ap lt 1 2", "t");
+    }
+
+}
 
 fn main() {
     println!("Hello, Galaxy!");
