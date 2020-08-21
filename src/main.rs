@@ -39,37 +39,76 @@ pub fn parse_i64(s: &String) -> i64 {
     }
 }
 
-fn read_galaxy() {
+fn interact(functions: &FunctionMap, state: ExprPtr, event: ExprPtr) -> (ExprPtr, ExprPtr) {
+    let expr = ap(ap(atom("galaxy"), state.clone()), event.clone());
+    println!("evaluating galaxy!");
+    let res = eval(expr, functions);
+    println!("res = {}", to_str(&res));
+    // tmp:
+    (state, event)
+}
+
+fn run_galaxy() {
     let lines = read_input("galaxy.txt");
+    let mut functions: FunctionMap = HashMap::new();
     for l in &lines {
         let parts = split_string(l, " = ");
         let name = parts[0].to_string();
         let tokens = split_string(&parts[1], " ");
-        println!("{} -> {} tokens: {:?}", &name, tokens.len(), &tokens);
+        let expr = parse_from_tokens(&tokens);
+        // println!(
+        //     "{} -> {} tokens: {:?}, expr = {}",
+        //     &name,
+        //     tokens.len(),
+        //     &tokens,
+        //     to_str(&expr)
+        // );
+        functions.insert(name, expr);
     }
+    let pt = (0, 0);
+    let click = ap(ap(cons(), atom_int(pt.0)), atom_int(pt.1));
+    let state = atom("nil");
+    interact(&functions, state, click);
 }
 
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum ExprType {
-    Atom,
-    Ap,
+// #[derive(Clone, Copy, PartialEq, Debug)]
+// enum ExprType {
+//     Atom,
+//     Ap,
+// }
+
+#[derive(Debug, Clone, PartialEq)]
+enum ExprImpl {
+    Atom(String),
+    Ap { fun: ExprPtr, arg: ExprPtr },
 }
 
 type ExprPtr = Rc<Expr>;
-// type ExprLink = Option<ExprPtr>;
 
 #[derive(Debug, Clone, PartialEq)]
 struct Expr {
     evaluated: Option<RefCell<ExprPtr>>,
-    expr_type: ExprType,
-    // Atom fields:
-    name: String,
-    // Ap fields:
-    fun: Option<ExprPtr>,
-    arg: Option<ExprPtr>,
+    expr_impl: ExprImpl,
+    // expr_type: ExprType,
+    // // Atom fields:
+    // name: String,
+    // // Ap fields:
+    // fun: Option<ExprPtr>,
+    // arg: Option<ExprPtr>,
 }
 
-// TODO: find a library class for that
+fn to_str(expr: &Expr) -> String {
+    match &expr.expr_impl {
+        ExprImpl::Atom(name) => format!("{}", name).to_string(),
+        ExprImpl::Ap { fun, arg } => {
+            let str1 = to_str(&fun);
+            let str2 = to_str(&arg);
+            format!("(ap {} {})", str1, str2).to_string()
+        }
+    }
+}
+
+// TODO: consider a library class for that
 struct TokenStream {
     vec: Vec<String>,
     index: usize,
@@ -109,21 +148,22 @@ fn parse_expr(stream: &mut TokenStream) -> ExprPtr {
 
 type FunctionMap = HashMap<String, ExprPtr>;
 
-fn create_t() -> ExprPtr {
+fn t() -> ExprPtr {
     atom("t")
 }
 
-fn create_f() -> ExprPtr {
+fn f() -> ExprPtr {
     atom("f")
+}
+
+fn cons() -> ExprPtr {
+    atom("cons")
 }
 
 fn atom_string(name: String) -> ExprPtr {
     Rc::new(Expr {
         evaluated: None,
-        expr_type: ExprType::Atom,
-        name: name,
-        fun: None,
-        arg: None,
+        expr_impl: ExprImpl::Atom(name),
     })
 }
 
@@ -138,122 +178,149 @@ fn atom(name: &str) -> ExprPtr {
 fn ap(fun: ExprPtr, arg: ExprPtr) -> ExprPtr {
     Rc::new(Expr {
         evaluated: None,
-        expr_type: ExprType::Ap,
-        name: "ap".to_string(),
-        fun: Some(fun),
-        arg: Some(arg),
+        expr_impl: ExprImpl::Ap { fun: fun, arg: arg },
     })
 }
 
-fn eval(_expr: ExprPtr) -> ExprPtr {
+fn eval(_expr: ExprPtr, functions: &FunctionMap) -> ExprPtr {
     let mut expr = _expr.clone();
     if let Some(evaluated) = &expr.evaluated {
         return evaluated.borrow().clone();
     }
     let mut initial_expr = (*expr.clone()).clone();
     loop {
-        let result = try_eval(expr.clone());
-        if *result == *expr {
+        let result = try_eval(expr.clone(), functions);
+        // println!("  eval on {} --> {}", to_str(&expr), to_str(&result));
+        if result.expr_impl == expr.expr_impl {
             let result_expr = RefCell::new(result.clone());
-            let some = Some(result_expr);
-            initial_expr.evaluated = some;
+            initial_expr.evaluated = Some(result_expr);
             return result;
         }
         expr = result;
     }
 }
 
-fn try_eval(expr: ExprPtr) -> ExprPtr {
+fn try_eval(expr: ExprPtr, functions: &FunctionMap) -> ExprPtr {
     if let Some(evaluated) = &expr.evaluated {
         return evaluated.borrow().clone();
     }
-    println!("  Evaluating --> {:?}", expr);
-    if expr.expr_type == ExprType::Ap {
-        let fun_expr = expr.fun.as_ref().unwrap().clone();
-        let fun = eval(fun_expr);
-        let x = expr.arg.as_ref().unwrap().clone();
-        if fun.expr_type == ExprType::Atom {
-            if fun.name == "neg" {
-                return atom_int(-as_number(eval(x)));
+    // println!("    try eval {}", to_str(&expr));
+    if let ExprImpl::Atom(name) = &expr.expr_impl {
+        if functions.contains_key(name) {
+            return functions[name].clone();
+        }
+    }
+    if let ExprImpl::Ap { fun, arg } = &expr.expr_impl {
+        let fun = eval(fun.clone(), functions);
+        let x = arg.clone();
+        if let ExprImpl::Atom(fun_name) = &fun.expr_impl {
+            // ap(fun, x)
+            if fun_name == "neg" {
+                return atom_int(-as_number(eval(x, functions)));
             }
-        } else if fun.expr_type == ExprType::Ap {
-            let fun2 = eval(fun.fun.as_ref().unwrap().clone());
-            let y = fun.arg.as_ref().unwrap().clone();
-            if fun2.expr_type == ExprType::Atom {
-                if fun2.name == "add" {
-                    return atom_int(as_number(eval(x)) + as_number(eval(y)));
-                } else if fun2.name == "mul" {
-                    return atom_int(as_number(eval(x)) * as_number(eval(y)));
-                } else if fun2.name == "div" {
-                    return atom_int(as_number(eval(y)) / as_number(eval(x)));
-                } else if fun2.name == "eq" {
-                    return if as_number(eval(x)) == as_number(eval(y)) {
-                        create_t()
+            if fun_name == "i" {
+                return x;
+            }
+            if fun_name == "nil" {
+                return t();
+            }
+            if fun_name == "isnil" {
+                return ap(x, ap(t(), ap(t(), f())));
+            }
+            if fun_name == "car" {
+                return ap(x, t());
+            }
+            if fun_name == "cdr" {
+                return ap(x, f());
+            }
+        }
+        if let ExprImpl::Ap {
+            fun: fun2_expr,
+            arg: arg2,
+        } = &fun.expr_impl
+        {
+            let fun2 = eval(fun2_expr.clone(), functions);
+            let y = arg2.clone();
+            if let ExprImpl::Atom(fun2_name) = &fun2.expr_impl {
+                // ap(ap(fun2, y), x)
+                if fun2_name == "t" {
+                    return y;
+                }
+                if fun2_name == "f" {
+                    return x;
+                }
+                if fun2_name == "add" {
+                    return atom_int(as_number(eval(x, functions)) + as_number(eval(y, functions)));
+                }
+                if fun2_name == "mul" {
+                    return atom_int(as_number(eval(x, functions)) * as_number(eval(y, functions)));
+                }
+                if fun2_name == "div" {
+                    return atom_int(as_number(eval(y, functions)) / as_number(eval(x, functions)));
+                }
+                if fun2_name == "lt" {
+                    return if as_number(eval(y, functions)) < as_number(eval(x, functions)) {
+                        t()
                     } else {
-                        create_f()
+                        f()
                     };
-                } else if fun2.name == "lt" {
-                    return if as_number(eval(y)) < as_number(eval(x)) {
-                        create_t()
+                }
+                if fun2_name == "eq" {
+                    return if as_number(eval(x, functions)) == as_number(eval(y, functions)) {
+                        t()
                     } else {
-                        create_f()
+                        f()
                     };
-                } else {
-                    panic!("Unimplemented operator: {:?}", fun2.name);
+                }
+                if fun2_name == "cons" {
+                    return eval_cons(y, x, &functions);
                 }
             }
-        } else {
-            panic!("Unimplemented expr_type: {:?}", fun.expr_type);
+            if let ExprImpl::Ap {
+                fun: fun3_expr,
+                arg: arg3,
+            } = &fun2.expr_impl
+            {
+                let fun3 = eval(fun3_expr.clone(), functions);
+                let z = eval(arg3.clone(), functions);
+                if let ExprImpl::Atom(fun3_name) = &fun3.expr_impl {
+                    if fun3_name == "s" {
+                        return ap(ap(z, x.clone()), ap(y, x));
+                    }
+                    if fun3_name == "c" {
+                        return ap(ap(z, x), y);
+                    }
+                    if fun3_name == "b" {
+                        return ap(z, ap(y, x));
+                    }
+                    if fun3_name == "cons" {
+                        return ap(ap(x, z), y);
+                    }
+                }
+            }
         }
     }
     expr
 }
 
-fn as_number(expr: ExprPtr) -> i64 {
-    if expr.expr_type == ExprType::Atom {
-        return parse_i64(&expr.name);
-    }
-    panic!("{:?} is not a number", *expr);
+fn eval_cons(a: ExprPtr, b: ExprPtr, functions: &FunctionMap) -> ExprPtr {
+    // println!("running eval_cons..");
+    let mut res = ap(ap(cons(), eval(a, functions)), eval(b, functions));
+    let mut ret = (*res.clone()).clone();
+    ret.evaluated = Some(RefCell::new(res));
+    Rc::new(ret)
 }
 
-// Expr try_eval(Expr expr)
-//     if (expr.Evaluated != null)
-//         return expr.Evaluated
-//     if (expr is Atom && functions[expr.Name] != null)
-//         return functions[expr.Name]
-//     if (expr is Ap)
-//         Expr fun = eval(expr.Fun)
-//         Expr x = expr.Arg
-//         if (fun is Atom)
-//             if (fun.Name == "neg") return Atom(-asNum(eval(x)))
-//             if (fun.Name == "i") return x
-//             if (fun.Name == "nil") return t
-//             if (fun.Name == "isnil") return Ap(x, Ap(t, Ap(t, f)))
-//             if (fun.Name == "car") return Ap(x, t)
-//             if (fun.Name == "cdr") return Ap(x, f)
-//         if (fun is Ap)
-//             Expr fun2 = eval(fun.Fun)
-//             Expr y = fun.Arg
-//             if (fun2 is Atom)
-//                 if (fun2.Name == "t") return y
-//                 if (fun2.Name == "f") return x
-//                 if (fun2.Name == "add") return Atom(asNum(eval(x)) + asNum(eval(y)))
-//                 if (fun2.Name == "mul") return Atom(asNum(eval(x)) * asNum(eval(y)))
-//                 if (fun2.Name == "div") return Atom(asNum(eval(y)) / asNum(eval(x)))
-//                 if (fun2.Name == "lt") return asNum(eval(y)) < asNum(eval(x)) ? t : f
-//                 if (fun2.Name == "eq") return asNum(eval(x)) == asNum(eval(y)) ? t : f
-//                 if (fun2.Name == "cons") return evalCons(y, x)
-//             if (fun2 is Ap)
-//                 Expr fun3 = eval(fun2.Fun)
-//                 Expr z = fun2.Arg
-//                 if (fun3 is Atom)
-//                     if (fun3.Name == "s") return Ap(Ap(z, x), Ap(y, x))
-//                     if (fun3.Name == "c") return Ap(Ap(z, x), y)
-//                     if (fun3.Name == "b") return Ap(z, Ap(y, x))
-//                     if (fun3.Name == "cons") return Ap(Ap(x, z), y)
-//     return expr
-
-
+fn as_number(expr: ExprPtr) -> i64 {
+    match &expr.expr_impl {
+        ExprImpl::Atom(name) => {
+            return parse_i64(&name);
+        }
+        _ => {
+            panic!("{:?} is not a number", expr);
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -261,18 +328,25 @@ mod tests {
 
     fn assert_parse_eval(input: &str, expected: &str) {
         let expr = parse_from_string(&input.to_string());
-        let value = eval(expr);
-        assert_eq!(value.expr_type, ExprType::Atom);
-        assert_eq!(value.name, expected, "input = {}", input);
+        let functions: FunctionMap = HashMap::new();
+        let value = eval(expr, &functions);
+        if let ExprImpl::Atom(name) = &value.expr_impl {
+            assert_eq!(name, expected);
+        } else {
+            assert!(false, "Unexpected result: {:?}", to_str(&value));
+        }
     }
 
     #[test]
     fn test_eval1() {
         let expr = ap(atom("neg"), atom("14"));
-        let value = eval(expr);
-        println!("{:?}", value);
-        assert_eq!(value.expr_type, ExprType::Atom);
-        assert_eq!(value.name, "-14");
+        let functions: FunctionMap = HashMap::new();
+        let value = eval(expr, &functions);
+        if let ExprImpl::Atom(name) = &value.expr_impl {
+            assert_eq!(name, "-14");
+        } else {
+            assert!(false, "Unexpected result: {:?}", value.expr_impl);
+        }
     }
 
     #[test]
@@ -307,7 +381,6 @@ mod tests {
         assert_parse_eval("ap ap eq 0 2", "f");
     }
 
-
     #[test]
     fn test_lt() {
         assert_parse_eval("ap ap lt 1 0", "f");
@@ -315,9 +388,31 @@ mod tests {
         assert_parse_eval("ap ap lt 1 2", "t");
     }
 
+    #[test]
+    fn test_tf() {
+        assert_parse_eval("ap ap t 1 5", "1");
+        assert_parse_eval("ap ap f 1 5", "5");
+    }
+
+    #[test]
+    fn test_cons() {
+        assert_parse_eval("ap car ap ap cons 1 5", "1");
+        assert_parse_eval("ap cdr ap ap cons 1 5", "5");
+    }
+
+    #[test]
+    fn test_eval_const() {
+        let expr = ap(ap(cons(), atom("1")), atom("5"));
+        let functions: FunctionMap = HashMap::new();
+        let expr2 = try_eval(expr.clone(), &functions);
+        assert_eq!(expr.expr_impl, expr2.expr_impl);
+        println!("{:?}", expr.expr_impl);
+        println!("{:?}", expr2.expr_impl);
+        let exp3 = eval(expr.clone(), &functions);
+    }
 }
 
 fn main() {
     println!("Hello, Galaxy!");
-    // read_galaxy();
+    run_galaxy();
 }
