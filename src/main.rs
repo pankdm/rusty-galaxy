@@ -108,6 +108,13 @@ fn to_str(expr: &Expr) -> String {
     }
 }
 
+fn to_short_str(expr: &ExprPtr) -> String {
+    match &expr.expr_impl {
+        ExprImpl::Atom(name) => format!("atom({})", name).to_string(),
+        ExprImpl::Ap { fun, arg } => format!("ap()").to_string(),
+    }
+}
+
 // TODO: consider a library class for that
 struct TokenStream {
     vec: Vec<String>,
@@ -189,6 +196,7 @@ fn eval(_expr: ExprPtr, functions: &FunctionMap) -> ExprPtr {
     }
     let mut initial_expr = (*expr.clone()).clone();
     loop {
+        println!("eval on {}", to_short_str(&expr));
         let result = try_eval(expr.clone(), functions);
         // println!("  eval on {} --> {}", to_str(&expr), to_str(&result));
         if result.expr_impl == expr.expr_impl {
@@ -285,7 +293,8 @@ fn try_eval(expr: ExprPtr, functions: &FunctionMap) -> ExprPtr {
                 let z = eval(arg3.clone(), functions);
                 if let ExprImpl::Atom(fun3_name) = &fun3.expr_impl {
                     if fun3_name == "s" {
-                        return ap(ap(z, x.clone()), ap(y, x));
+                        println!("Running s with x = {}", to_str(&x));
+                        return ap(ap(z, Rc::clone(&x)), ap(y, x));
                     }
                     if fun3_name == "c" {
                         return ap(ap(z, x), y);
@@ -410,6 +419,62 @@ mod tests {
         println!("{:?}", expr2.expr_impl);
         let exp3 = eval(expr.clone(), &functions);
     }
+
+    #[test]
+    fn test_s_combinator() {
+        // assert_parse_eval("ap ap ap s mul ap add 1 6", "42");
+        assert_parse_eval("ap ap ap s mul ap add 1 ap ap add 2 4", "42");
+    }
+
+    #[test]
+    fn test_rc_clone() {
+        let mut x = parse_from_string(&"ap ap add 2 4".to_string());
+        let mut x2 = Rc::clone(&x);
+        println!("x = {:?}", &x);
+        println!("x2 = {:?}", &x2);
+
+        let functions: FunctionMap = HashMap::new();
+        let y = eval(x.clone(), &functions);
+        println!("y = {:?}", &y);
+        println!("x = {:?}", &x);
+        println!("x2 = {:?}", &x2);
+    }
+
+    #[test]
+    fn test_foo() {
+        let foo = Foo {
+            evaluated: None,
+            value: 42,
+        };
+        let mut x = Rc::new(RefCell::new(foo));
+        let mut x2 = Rc::clone(&x);
+        println!("x = {}", foo_to_str(&x));
+        println!("x2 = {}", foo_to_str(&x2));
+
+        x.borrow_mut().evaluated = Some(x.clone());
+        println!("x = {}", foo_to_str(&x));
+        println!("x2 = {}", foo_to_str(&x2));
+    }
+}
+
+type FooPtr = Rc<RefCell<Foo>>;
+
+fn foo_to_str(foo: &FooPtr) -> String {
+    match &foo.borrow().evaluated {
+        Some(foo_ptr) => format!(
+            "Foo({}, Some({}))",
+            foo.borrow().value,
+            foo_ptr.borrow().value
+        )
+        .to_string(),
+        _ => format!("Foo({}, None)", foo.borrow().value).to_string(),
+    }
+}
+
+#[derive(Debug)]
+struct Foo {
+    value: i32,
+    evaluated: Option<FooPtr>,
 }
 
 fn main() {
