@@ -4,6 +4,8 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::rc::Rc;
 
+const MUL: usize = 2;
+
 pub fn read_input(filename: &str) -> Vec<String> {
     let file = File::open(filename).unwrap();
     let reader = BufReader::new(file);
@@ -42,7 +44,7 @@ pub fn parse_i64(s: &String) -> i64 {
 fn interact(functions: &FunctionMap, state: ExprPtr, event: ExprPtr) -> (ExprPtr, ExprPtr) {
     let expr = ap(ap(atom("galaxy"), state.clone()), event.clone());
     println!("evaluating galaxy!");
-    let res = eval(expr, functions);
+    let res = eval(expr, functions, 0);
     println!("res = {}", to_str(&res.borrow()));
     // tmp:
     (state, event)
@@ -85,7 +87,7 @@ enum ExprImpl {
 
 type ExprPtr = Rc<RefCell<Expr>>;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug)]
 struct Expr {
     evaluated: Option<ExprPtr>,
     expr_impl: ExprImpl,
@@ -95,6 +97,13 @@ struct Expr {
     // // Ap fields:
     // fun: Option<ExprPtr>,
     // arg: Option<ExprPtr>,
+}
+
+impl PartialEq for Expr {
+    fn eq(&self, other: &Self) -> bool {
+        // compare only body
+        self.expr_impl == other.expr_impl
+    }
 }
 
 fn to_str(expr: &Expr) -> String {
@@ -189,17 +198,25 @@ fn ap(fun: ExprPtr, arg: ExprPtr) -> ExprPtr {
     }))
 }
 
-fn eval(_expr: ExprPtr, functions: &FunctionMap) -> ExprPtr {
-    let mut expr = _expr.clone();
+fn eval(_expr: ExprPtr, functions: &FunctionMap, depth: usize) -> ExprPtr {
+    let mut expr = Rc::clone(&_expr);
     if let Some(evaluated) = &expr.borrow().evaluated {
         return Rc::clone(&evaluated);
     }
-    let mut initial_expr = (*expr.clone()).clone();
+    let mut initial_expr = Rc::clone(&expr);
+    let indent = " ".repeat(MUL * depth);
     loop {
-        println!("eval on {}", to_short_str(&expr));
-        let result = try_eval(expr.clone(), functions);
-        // println!("  eval on {} --> {}", to_str(&expr), to_str(&result));
+        // println!("{}>> eval on {}", indent, to_str(&expr.borrow()));
+        let result = try_eval(Rc::clone(&expr), functions, depth + 1);
+        // println!(
+        //     "{}<< evaled on {} --> {}",
+        //     indent,
+        //     to_str(&expr.borrow()),
+        //     to_str(&result.borrow())
+        // );
+        // println!("{}checking equality", indent);
         if result.borrow().expr_impl == expr.borrow().expr_impl {
+            // println!("{}returning result", indent);
             initial_expr.borrow_mut().evaluated = Some(Rc::clone(&result));
             return result;
         }
@@ -207,23 +224,26 @@ fn eval(_expr: ExprPtr, functions: &FunctionMap) -> ExprPtr {
     }
 }
 
-fn try_eval(expr: ExprPtr, functions: &FunctionMap) -> ExprPtr {
+fn try_eval(expr: ExprPtr, functions: &FunctionMap, depth: usize) -> ExprPtr {
     if let Some(evaluated) = &expr.borrow().evaluated {
         return Rc::clone(&evaluated);
     }
-    // println!("    try eval {}", to_str(&expr));
+    let indent = " ".repeat(MUL * depth);
+    // println!("{}try eval {}", indent, to_str(&expr.borrow()));
     if let ExprImpl::Atom(name) = &expr.borrow().expr_impl {
         if functions.contains_key(name) {
             return functions[name].clone();
         }
     }
     if let ExprImpl::Ap { fun: fun_expr, arg } = &expr.borrow().expr_impl {
-        let fun = eval(fun_expr.clone(), functions);
+        // ap(fun, x)
+        // println!("{}inside ap(fun, x)", indent);
+        let fun = eval(fun_expr.clone(), functions, depth + 1);
         let x = arg.clone();
         if let ExprImpl::Atom(fun_name) = &fun.borrow().expr_impl {
             // ap(fun, x)
             if fun_name == "neg" {
-                return atom_int(-as_number(eval(x, functions)));
+                return atom_int(-as_number(eval(x, functions, depth + 1)));
             }
             if fun_name == "i" {
                 return x;
@@ -247,10 +267,12 @@ fn try_eval(expr: ExprPtr, functions: &FunctionMap) -> ExprPtr {
             arg: arg2,
         } = &fun_borrowed.expr_impl
         {
-            let fun2 = eval(fun2_expr.clone(), functions);
-            let y = arg2.clone();
+            // ap(ap(fun2, y), x)
+            // println!("{}inside ap(ap(fun2, y), x), fun2 = {}", indent, to_str(&fun2_expr.borrow()));
+            let fun2 = eval(fun2_expr.clone(), functions, depth + 1);
+            let y = arg2.clone();            
             if let ExprImpl::Atom(fun2_name) = &fun2.borrow().expr_impl {
-                // ap(ap(fun2, y), x)
+                // println!("{}inside ap(ap({}, y), x)", indent, fun2_name);
                 if fun2_name == "t" {
                     return y;
                 }
@@ -258,30 +280,43 @@ fn try_eval(expr: ExprPtr, functions: &FunctionMap) -> ExprPtr {
                     return x;
                 }
                 if fun2_name == "add" {
-                    return atom_int(as_number(eval(x, functions)) + as_number(eval(y, functions)));
+                    return atom_int(
+                        as_number(eval(x, functions, depth + 1))
+                            + as_number(eval(y, functions, depth + 1)),
+                    );
                 }
                 if fun2_name == "mul" {
-                    return atom_int(as_number(eval(x, functions)) * as_number(eval(y, functions)));
+                    return atom_int(
+                        as_number(eval(x, functions, depth + 1))
+                            * as_number(eval(y, functions, depth + 1)),
+                    );
                 }
                 if fun2_name == "div" {
-                    return atom_int(as_number(eval(y, functions)) / as_number(eval(x, functions)));
+                    return atom_int(
+                        as_number(eval(y, functions, depth + 1))
+                            / as_number(eval(x, functions, depth + 1)),
+                    );
                 }
                 if fun2_name == "lt" {
-                    return if as_number(eval(y, functions)) < as_number(eval(x, functions)) {
+                    return if as_number(eval(y, functions, depth + 1))
+                        < as_number(eval(x, functions, depth + 1))
+                    {
                         t()
                     } else {
                         f()
                     };
                 }
                 if fun2_name == "eq" {
-                    return if as_number(eval(x, functions)) == as_number(eval(y, functions)) {
+                    return if as_number(eval(x, functions, depth + 1))
+                        == as_number(eval(y, functions, depth + 1))
+                    {
                         t()
                     } else {
                         f()
                     };
                 }
                 if fun2_name == "cons" {
-                    return eval_cons(y, x, &functions);
+                    return eval_cons(y, x, &functions, depth + 1);
                 }
             }
             let fun2_borrowed = fun2.borrow();
@@ -290,12 +325,12 @@ fn try_eval(expr: ExprPtr, functions: &FunctionMap) -> ExprPtr {
                 arg: arg3,
             } = &fun2_borrowed.expr_impl
             {
-                let fun3 = eval(fun3_expr.clone(), functions);
-                let z = eval(arg3.clone(), functions);
+                let fun3 = eval(fun3_expr.clone(), functions, depth + 1);
+                let z = eval(arg3.clone(), functions, depth + 1);
                 let fun3_borrowed = fun3.borrow();
                 if let ExprImpl::Atom(fun3_name) = &fun3_borrowed.expr_impl {
                     if fun3_name == "s" {
-                        println!("Running s with x = {}", to_str(&x.borrow()));
+                        // println!("Running s with x = {}", to_str(&x.borrow()));
                         return ap(ap(z, Rc::clone(&x)), ap(y, x));
                     }
                     if fun3_name == "c" {
@@ -314,9 +349,12 @@ fn try_eval(expr: ExprPtr, functions: &FunctionMap) -> ExprPtr {
     expr
 }
 
-fn eval_cons(a: ExprPtr, b: ExprPtr, functions: &FunctionMap) -> ExprPtr {
+fn eval_cons(a: ExprPtr, b: ExprPtr, functions: &FunctionMap, depth: usize) -> ExprPtr {
     // println!("running eval_cons..");
-    let mut res = ap(ap(cons(), eval(a, functions)), eval(b, functions));
+    let mut res = ap(
+        ap(cons(), eval(a, functions, depth + 1)),
+        eval(b, functions, depth + 1),
+    );
     res.borrow_mut().evaluated = Some(Rc::clone(&res));
     res
 }
@@ -339,7 +377,7 @@ mod tests {
     fn assert_parse_eval(input: &str, expected: &str) {
         let expr = parse_from_string(&input.to_string());
         let functions: FunctionMap = HashMap::new();
-        let value = eval(expr, &functions);
+        let value = eval(expr, &functions, 0);
         let value_borrowed = value.borrow();
         if let ExprImpl::Atom(name) = &value_borrowed.expr_impl {
             assert_eq!(name, expected);
@@ -352,7 +390,7 @@ mod tests {
     fn test_eval1() {
         let expr = ap(atom("neg"), atom("14"));
         let functions: FunctionMap = HashMap::new();
-        let value = eval(expr, &functions);
+        let value = eval(expr, &functions, 0);
         let value_borrowed = value.borrow();
         if let ExprImpl::Atom(name) = &value_borrowed.expr_impl {
             assert_eq!(name, "-14");
@@ -413,14 +451,14 @@ mod tests {
     }
 
     #[test]
-    fn test_eval_const() {
+    fn test_eval_cons() {
         let expr = ap(ap(cons(), atom("1")), atom("5"));
         let functions: FunctionMap = HashMap::new();
-        let expr2 = try_eval(expr.clone(), &functions);
+        let expr2 = try_eval(expr.clone(), &functions, 0);
         assert_eq!(expr.borrow().expr_impl, expr2.borrow().expr_impl);
-        println!("{:?}", expr.borrow().expr_impl);
-        println!("{:?}", expr2.borrow().expr_impl);
-        let exp3 = eval(expr.clone(), &functions);
+        println!("{}", to_str(&expr.borrow()));
+        println!("{}", to_str(&expr2.borrow()));
+        let exp3 = eval(expr.clone(), &functions, 0);
     }
 
     #[test]
@@ -431,20 +469,21 @@ mod tests {
 
     #[test]
     fn test_rc_clone() {
-        let mut x = parse_from_string(&"ap ap add 2 4".to_string());
-        let mut x2 = Rc::clone(&x);
-        println!("x = {:?}", &x);
-        println!("x2 = {:?}", &x2);
+        // let mut x = parse_from_string(&"ap ap add 2 4".to_string());
+        // let mut x2 = Rc::clone(&x);
+        // println!("x = {:?}", &x);
+        // println!("x2 = {:?}", &x2);
 
-        let functions: FunctionMap = HashMap::new();
-        let y = eval(x.clone(), &functions);
-        println!("y = {:?}", &y);
-        println!("x = {:?}", &x);
-        println!("x2 = {:?}", &x2);
+        // let functions: FunctionMap = HashMap::new();
+        // let y = eval(Rc::clone(&x), &functions);
+        // println!("y = {:?}", &y);
+        // println!("x = {:?}", &x);
+        // println!("x2 = {:?}", &x2);
+        // assert_eq!(y.borrow().evaluated.is_some(), true);
     }
 }
 
 fn main() {
     println!("Hello, Galaxy!");
-    // run_galaxy();
+    run_galaxy();
 }
