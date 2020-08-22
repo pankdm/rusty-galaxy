@@ -43,7 +43,7 @@ fn interact(functions: &FunctionMap, state: ExprPtr, event: ExprPtr) -> (ExprPtr
     let expr = ap(ap(atom("galaxy"), state.clone()), event.clone());
     println!("evaluating galaxy!");
     let res = eval(expr, functions);
-    println!("res = {}", to_str(&res));
+    println!("res = {}", to_str(&res.borrow()));
     // tmp:
     (state, event)
 }
@@ -83,11 +83,11 @@ enum ExprImpl {
     Ap { fun: ExprPtr, arg: ExprPtr },
 }
 
-type ExprPtr = Rc<Expr>;
+type ExprPtr = Rc<RefCell<Expr>>;
 
 #[derive(Debug, Clone, PartialEq)]
 struct Expr {
-    evaluated: Option<RefCell<ExprPtr>>,
+    evaluated: Option<ExprPtr>,
     expr_impl: ExprImpl,
     // expr_type: ExprType,
     // // Atom fields:
@@ -101,15 +101,15 @@ fn to_str(expr: &Expr) -> String {
     match &expr.expr_impl {
         ExprImpl::Atom(name) => format!("{}", name).to_string(),
         ExprImpl::Ap { fun, arg } => {
-            let str1 = to_str(&fun);
-            let str2 = to_str(&arg);
+            let str1 = to_str(&fun.borrow());
+            let str2 = to_str(&arg.borrow());
             format!("(ap {} {})", str1, str2).to_string()
         }
     }
 }
 
 fn to_short_str(expr: &ExprPtr) -> String {
-    match &expr.expr_impl {
+    match &expr.borrow().expr_impl {
         ExprImpl::Atom(name) => format!("atom({})", name).to_string(),
         ExprImpl::Ap { fun, arg } => format!("ap()").to_string(),
     }
@@ -168,10 +168,10 @@ fn cons() -> ExprPtr {
 }
 
 fn atom_string(name: String) -> ExprPtr {
-    Rc::new(Expr {
+    Rc::new(RefCell::new(Expr {
         evaluated: None,
         expr_impl: ExprImpl::Atom(name),
-    })
+    }))
 }
 
 fn atom_int(value: i64) -> ExprPtr {
@@ -183,25 +183,24 @@ fn atom(name: &str) -> ExprPtr {
 }
 
 fn ap(fun: ExprPtr, arg: ExprPtr) -> ExprPtr {
-    Rc::new(Expr {
+    Rc::new(RefCell::new(Expr {
         evaluated: None,
         expr_impl: ExprImpl::Ap { fun: fun, arg: arg },
-    })
+    }))
 }
 
 fn eval(_expr: ExprPtr, functions: &FunctionMap) -> ExprPtr {
     let mut expr = _expr.clone();
-    if let Some(evaluated) = &expr.evaluated {
-        return evaluated.borrow().clone();
+    if let Some(evaluated) = &expr.borrow().evaluated {
+        return Rc::clone(&evaluated);
     }
     let mut initial_expr = (*expr.clone()).clone();
     loop {
         println!("eval on {}", to_short_str(&expr));
         let result = try_eval(expr.clone(), functions);
         // println!("  eval on {} --> {}", to_str(&expr), to_str(&result));
-        if result.expr_impl == expr.expr_impl {
-            let result_expr = RefCell::new(result.clone());
-            initial_expr.evaluated = Some(result_expr);
+        if result.borrow().expr_impl == expr.borrow().expr_impl {
+            initial_expr.borrow_mut().evaluated = Some(Rc::clone(&result));
             return result;
         }
         expr = result;
@@ -209,19 +208,19 @@ fn eval(_expr: ExprPtr, functions: &FunctionMap) -> ExprPtr {
 }
 
 fn try_eval(expr: ExprPtr, functions: &FunctionMap) -> ExprPtr {
-    if let Some(evaluated) = &expr.evaluated {
-        return evaluated.borrow().clone();
+    if let Some(evaluated) = &expr.borrow().evaluated {
+        return Rc::clone(&evaluated);
     }
     // println!("    try eval {}", to_str(&expr));
-    if let ExprImpl::Atom(name) = &expr.expr_impl {
+    if let ExprImpl::Atom(name) = &expr.borrow().expr_impl {
         if functions.contains_key(name) {
             return functions[name].clone();
         }
     }
-    if let ExprImpl::Ap { fun, arg } = &expr.expr_impl {
-        let fun = eval(fun.clone(), functions);
+    if let ExprImpl::Ap { fun: fun_expr, arg } = &expr.borrow().expr_impl {
+        let fun = eval(fun_expr.clone(), functions);
         let x = arg.clone();
-        if let ExprImpl::Atom(fun_name) = &fun.expr_impl {
+        if let ExprImpl::Atom(fun_name) = &fun.borrow().expr_impl {
             // ap(fun, x)
             if fun_name == "neg" {
                 return atom_int(-as_number(eval(x, functions)));
@@ -242,14 +241,15 @@ fn try_eval(expr: ExprPtr, functions: &FunctionMap) -> ExprPtr {
                 return ap(x, f());
             }
         }
+        let fun_borrowed = fun.borrow();
         if let ExprImpl::Ap {
             fun: fun2_expr,
             arg: arg2,
-        } = &fun.expr_impl
+        } = &fun_borrowed.expr_impl
         {
             let fun2 = eval(fun2_expr.clone(), functions);
             let y = arg2.clone();
-            if let ExprImpl::Atom(fun2_name) = &fun2.expr_impl {
+            if let ExprImpl::Atom(fun2_name) = &fun2.borrow().expr_impl {
                 // ap(ap(fun2, y), x)
                 if fun2_name == "t" {
                     return y;
@@ -284,16 +284,18 @@ fn try_eval(expr: ExprPtr, functions: &FunctionMap) -> ExprPtr {
                     return eval_cons(y, x, &functions);
                 }
             }
+            let fun2_borrowed = fun2.borrow();
             if let ExprImpl::Ap {
                 fun: fun3_expr,
                 arg: arg3,
-            } = &fun2.expr_impl
+            } = &fun2_borrowed.expr_impl
             {
                 let fun3 = eval(fun3_expr.clone(), functions);
                 let z = eval(arg3.clone(), functions);
-                if let ExprImpl::Atom(fun3_name) = &fun3.expr_impl {
+                let fun3_borrowed = fun3.borrow();
+                if let ExprImpl::Atom(fun3_name) = &fun3_borrowed.expr_impl {
                     if fun3_name == "s" {
-                        println!("Running s with x = {}", to_str(&x));
+                        println!("Running s with x = {}", to_str(&x.borrow()));
                         return ap(ap(z, Rc::clone(&x)), ap(y, x));
                     }
                     if fun3_name == "c" {
@@ -315,13 +317,12 @@ fn try_eval(expr: ExprPtr, functions: &FunctionMap) -> ExprPtr {
 fn eval_cons(a: ExprPtr, b: ExprPtr, functions: &FunctionMap) -> ExprPtr {
     // println!("running eval_cons..");
     let mut res = ap(ap(cons(), eval(a, functions)), eval(b, functions));
-    let mut ret = (*res.clone()).clone();
-    ret.evaluated = Some(RefCell::new(res));
-    Rc::new(ret)
+    res.borrow_mut().evaluated = Some(Rc::clone(&res));
+    res
 }
 
 fn as_number(expr: ExprPtr) -> i64 {
-    match &expr.expr_impl {
+    match &expr.borrow().expr_impl {
         ExprImpl::Atom(name) => {
             return parse_i64(&name);
         }
@@ -339,10 +340,11 @@ mod tests {
         let expr = parse_from_string(&input.to_string());
         let functions: FunctionMap = HashMap::new();
         let value = eval(expr, &functions);
-        if let ExprImpl::Atom(name) = &value.expr_impl {
+        let value_borrowed = value.borrow();
+        if let ExprImpl::Atom(name) = &value_borrowed.expr_impl {
             assert_eq!(name, expected);
         } else {
-            assert!(false, "Unexpected result: {:?}", to_str(&value));
+            assert!(false, "Unexpected result: {:?}", to_str(&value_borrowed));
         }
     }
 
@@ -351,10 +353,11 @@ mod tests {
         let expr = ap(atom("neg"), atom("14"));
         let functions: FunctionMap = HashMap::new();
         let value = eval(expr, &functions);
-        if let ExprImpl::Atom(name) = &value.expr_impl {
+        let value_borrowed = value.borrow();
+        if let ExprImpl::Atom(name) = &value_borrowed.expr_impl {
             assert_eq!(name, "-14");
         } else {
-            assert!(false, "Unexpected result: {:?}", value.expr_impl);
+            assert!(false, "Unexpected result: {:?}", &value_borrowed.expr_impl);
         }
     }
 
@@ -414,9 +417,9 @@ mod tests {
         let expr = ap(ap(cons(), atom("1")), atom("5"));
         let functions: FunctionMap = HashMap::new();
         let expr2 = try_eval(expr.clone(), &functions);
-        assert_eq!(expr.expr_impl, expr2.expr_impl);
-        println!("{:?}", expr.expr_impl);
-        println!("{:?}", expr2.expr_impl);
+        assert_eq!(expr.borrow().expr_impl, expr2.borrow().expr_impl);
+        println!("{:?}", expr.borrow().expr_impl);
+        println!("{:?}", expr2.borrow().expr_impl);
         let exp3 = eval(expr.clone(), &functions);
     }
 
@@ -439,45 +442,9 @@ mod tests {
         println!("x = {:?}", &x);
         println!("x2 = {:?}", &x2);
     }
-
-    #[test]
-    fn test_foo() {
-        let foo = Foo {
-            evaluated: None,
-            value: 42,
-        };
-        let mut x = Rc::new(RefCell::new(foo));
-        let mut x2 = Rc::clone(&x);
-        println!("x = {}", foo_to_str(&x));
-        println!("x2 = {}", foo_to_str(&x2));
-
-        x.borrow_mut().evaluated = Some(x.clone());
-        println!("x = {}", foo_to_str(&x));
-        println!("x2 = {}", foo_to_str(&x2));
-    }
-}
-
-type FooPtr = Rc<RefCell<Foo>>;
-
-fn foo_to_str(foo: &FooPtr) -> String {
-    match &foo.borrow().evaluated {
-        Some(foo_ptr) => format!(
-            "Foo({}, Some({}))",
-            foo.borrow().value,
-            foo_ptr.borrow().value
-        )
-        .to_string(),
-        _ => format!("Foo({}, None)", foo.borrow().value).to_string(),
-    }
-}
-
-#[derive(Debug)]
-struct Foo {
-    value: i32,
-    evaluated: Option<FooPtr>,
 }
 
 fn main() {
     println!("Hello, Galaxy!");
-    run_galaxy();
+    // run_galaxy();
 }
